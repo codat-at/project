@@ -1,6 +1,9 @@
 # Copyright 2016 Tecnativa <vicent.cubells@tecnativa.com>
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
+from odoo import Command
+from odoo.tests import new_test_user
+
 from odoo.addons.base.tests.common import BaseCommon
 
 
@@ -22,6 +25,29 @@ class TestProjectTaskCode(BaseCommon):
         code = self.task_sequence.get_next_char(number_next)
         project_task = self.project_task_model.create({"name": "Testing task code"})
         self.assertNotEqual(project_task.code, "/")
+        self.assertEqual(project_task.code, code)
+
+    def test_portal_task_code_assign(self):
+        portal_user = new_test_user(
+            self.env, login="project_task_code_portal", groups="base.group_portal"
+        )
+        project = self.env["project.project"].create(
+            {
+                "name": "Portal project",
+                "privacy_visibility": "portal",
+                "collaborator_ids": [
+                    Command.create({"partner_id": portal_user.partner_id.id})
+                ],
+            }
+        )
+        project.message_subscribe(partner_ids=portal_user.partner_id.ids)
+        number_next = self.task_sequence.number_next_actual
+        code = self.task_sequence.get_next_char(number_next)
+        project_task = (
+            self.project_task_model.with_user(portal_user)
+            .with_context(default_project_id=project.id)
+            .create({"name": "Portal task"})
+        )
         self.assertEqual(project_task.code, code)
 
     def test_name_get(self):
@@ -64,6 +90,51 @@ class TestProjectTaskCode(BaseCommon):
             map(lambda x: x[0], result),
             f"Task with code {project_task.code} should not be in the results",
         )
+
+    def test_display_name_code_only_project(self):
+        project = self.env["project.project"].create(
+            {"name": "Code only", "task_name_display": "code"}
+        )
+        task = self.project_task_model.create(
+            {"name": "Testing task code", "project_id": project.id}
+        )
+        self.assertEqual(task.display_name, task.code)
+
+    def test_task_without_name_on_code_only_project(self):
+        project = self.env["project.project"].create(
+            {"name": "Code only", "task_name_display": "code"}
+        )
+        task = self.project_task_model.create({"project_id": project.id})
+        self.assertFalse(task.name)
+        self.assertEqual(task.display_name, task.code)
+
+    def test_duplicated_task_without_name_stays_untitled(self):
+        project = self.env["project.project"].create(
+            {"name": "Code only", "task_name_display": "code"}
+        )
+        task = self.project_task_model.create({"project_id": project.id})
+        copied = task.copy()
+        self.assertNotEqual(copied.code, task.code)
+        self.assertFalse(copied.name)
+        self.assertEqual(copied.display_name, copied.code)
+
+    def test_duplicated_task_with_name_keeps_the_copy_suffix(self):
+        task = self.project_task_model.create({"name": "Testing task code"})
+        copied = task.copy()
+        self.assertIn("(copy)", copied.name)
+
+    def test_display_name_falls_back_to_code_without_name(self):
+        project = self.env["project.project"].create({"name": "With titles"})
+        self.assertEqual(project.task_name_display, "code_name")
+        task = self.project_task_model.create({"project_id": project.id})
+        self.assertEqual(task.display_name, task.code)
+
+    def test_display_name_code_and_name_project(self):
+        project = self.env["project.project"].create({"name": "With titles"})
+        task = self.project_task_model.create(
+            {"name": "Testing task code", "project_id": project.id}
+        )
+        self.assertEqual(task.display_name, f"[{task.code}] Testing task code")
 
     def test_name_get_on_create(self):
         number_next = self.task_sequence.number_next_actual

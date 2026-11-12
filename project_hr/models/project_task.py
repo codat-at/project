@@ -12,6 +12,7 @@ class ProjectTask(models.Model):
         comodel_name="hr.employee",
         string="Linked employees",
         compute="_compute_employee_ids",
+        compute_sudo=True,
         store=True,
     )
     hr_category_ids = fields.Many2many(
@@ -22,9 +23,19 @@ class ProjectTask(models.Model):
         "this task, limiting the selectable users to be assigned to "
         "those that belongs to that category.",
     )
-    domain_hr_category_ids = fields.Binary(compute="_compute_domain_hr_category_ids")
+    domain_hr_category_ids = fields.Binary(
+        compute="_compute_domain_hr_category_ids",
+        compute_sudo=True,
+    )
     user_ids = fields.Many2many(domain="domain_user_ids")
-    domain_user_ids = fields.Binary(compute="_compute_domain_user_ids")
+    domain_user_ids = fields.Binary(
+        compute="_compute_domain_user_ids",
+        compute_sudo=True,
+    )
+
+    @property
+    def TASK_PORTAL_READABLE_FIELDS(self):
+        return super().TASK_PORTAL_READABLE_FIELDS | {"domain_user_ids"}
 
     @api.depends("user_ids", "company_id")
     def _compute_employee_ids(self):
@@ -47,23 +58,34 @@ class ProjectTask(models.Model):
         for task in self:
             domain = [("share", "=", False), ("active", "=", True)]
             if task.hr_category_ids:
-                domain = [
-                    (
-                        "employee_ids.company_id",
-                        "=",
-                        (task.company_id.id or self.env.company.id),
-                    ),
-                    ("employee_ids.category_ids", "in", task.hr_category_ids.ids),
-                ]
+                # Regular users have no read access to hr.employee and its category_ids
+                # field is restricted to HR officers, so the search would raise an
+                # AccessError for them. Resolve the allowed users with sudo and
+                # expose only their ids.
+                employees = (
+                    self.env["hr.employee"]
+                    .sudo()
+                    .search(
+                        [
+                            (
+                                "company_id",
+                                "=",
+                                (task.company_id.id or self.env.company.id),
+                            ),
+                            ("category_ids", "in", task.hr_category_ids.ids),
+                            ("user_id", "!=", False),
+                        ]
+                    )
+                )
+                domain = [("id", "in", employees.user_id.ids)]
             task.domain_user_ids = domain
 
     @api.constrains("hr_category_ids", "user_ids")
     def _check_employee_category_user(self):
         """Check user's employee belong to the selected category."""
         for task in self.filtered(lambda x: x.hr_category_ids and x.user_ids):
-            if any(
-                x not in task.employee_ids.category_ids for x in task.hr_category_ids
-            ):
+            employee_categories = task.employee_ids.sudo().category_ids
+            if any(x not in employee_categories for x in task.hr_category_ids):
                 raise exceptions.ValidationError(
                     self.env._(
                         "You can't assign a user not belonging to the selected "

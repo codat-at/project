@@ -14,6 +14,14 @@ class Task(models.Model):
 
     url = fields.Char(string="URL", compute="_compute_task_url")
 
+    @property
+    def TASK_PORTAL_READABLE_FIELDS(self):
+        # Expose `key` so it's readable in portal & project sharing views
+        # (otherwise the JS kanban arch parser crashes when reading
+        # record.fields.key.type because the field is filtered out by
+        # the server response spec).
+        return super().TASK_PORTAL_READABLE_FIELDS | {"key"}
+
     _task_key_unique = models.Constraint(
         "UNIQUE(key)",
         "Task key must be unique!",
@@ -26,7 +34,9 @@ class Task(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         ctx = self.env.context.get
-        for vals in vals_list:
+        portal_user = not self.env.su and self.env.user._is_portal()
+        portal_keys = {}
+        for index, vals in enumerate(vals_list):
             project_id = vals.get("project_id", False)
             if not project_id:
                 project_id = ctx("default_project_id", False)
@@ -36,8 +46,15 @@ class Task(models.Model):
 
             if project_id:
                 project = self.env["project.project"].browse(project_id)
-                vals["key"] = project.get_next_task_key()
-        return super().create(vals_list)
+                key = project.get_next_task_key()
+                if portal_user:
+                    portal_keys[index] = key
+                else:
+                    vals["key"] = key
+        tasks = super().create(vals_list)
+        for index, key in portal_keys.items():
+            tasks[index].sudo().key = key
+        return tasks
 
     def write(self, vals):
         project_id = vals.get("project_id", False)

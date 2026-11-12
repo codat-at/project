@@ -3,6 +3,10 @@
 
 from odoo import api, fields, models
 
+PROJECT_TASK_WRITABLE_FIELDS = {
+    "code",
+}
+
 
 class ProjectTask(models.Model):
     _inherit = "project.task"
@@ -15,11 +19,23 @@ class ProjectTask(models.Model):
         readonly=True,
         copy=False,
     )
+    # Tasks of a project displaying the number alone need no title, so the
+    # requirement is moved to the view, where it only applies to projects
+    # displaying the title.
+    name = fields.Char(required=False)
+    task_name_display = fields.Selection(
+        related="project_id.task_name_display",
+        readonly=True,
+    )
 
     _code_company_uniq = models.Constraint(
         "unique (company_id, code)",
         "The code must be unique!",
     )
+
+    @property
+    def TASK_PORTAL_WRITABLE_FIELDS(self):
+        return super().TASK_PORTAL_WRITABLE_FIELDS | PROJECT_TASK_WRITABLE_FIELDS
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -30,10 +46,24 @@ class ProjectTask(models.Model):
                 )
         return super().create(vals_list)
 
-    @api.depends("name", "code")
+    def copy_data(self, default=None):
+        vals_list = super().copy_data(default=default)
+        for task, vals in zip(self, vals_list, strict=True):
+            # An untitled task must stay untitled, instead of getting the
+            # "False (copy)" title built by the standard copy.
+            if not task.name and not (default or {}).get("name"):
+                vals["name"] = False
+        return vals_list
+
+    @api.depends("name", "code", "task_name_display")
     def _compute_display_name(self):
         result = super()._compute_display_name()
         for task in self:
-            if task.code and task.code != "/" and task.display_name:
-                task.display_name = f"[{task.code}] {task.display_name}"
+            if not task.code or task.code == "/":
+                continue
+            name = task.display_name
+            if task.task_name_display == "code" or not name:
+                task.display_name = task.code
+            else:
+                task.display_name = f"[{task.code}] {name}"
         return result
